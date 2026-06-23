@@ -31,7 +31,7 @@ def _ray_runtime_env_json():
                 "PYTHONPATH": "/root/Megatron-LM/",
                 "RAY_USE_UVLOOP": "0",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                "NCCL_NVLS_ENABLE": str(int(U.check_has_nvlink())),
+                "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", "0"),
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 "MASTER_ADDR": master_addr,
             }
