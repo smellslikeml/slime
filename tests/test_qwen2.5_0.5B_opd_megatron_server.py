@@ -77,18 +77,20 @@ def _launch_teacher_server():
     log_path = "/tmp/megatron_teacher_server.log"
     submission_id = f"megatron_teacher_{int(time.time())}_{os.getpid()}"
     entrypoint = (
+        f"exec > {log_path} 2>&1 && "
+        "set -euxo pipefail && "
         f"source {U.repo_base_dir}/scripts/models/{MODEL_TYPE}.sh && "
         "export PYTHONUNBUFFERED=1 && "
         "python3 -m slime.backends.megatron_utils.server.megatron_server "
         "${MODEL_ARGS[@]} "
         f"{_teacher_train_args()} "
-        f"> {log_path} 2>&1"
     )
     cmd = (
         "ray job submit "
         "--address=http://127.0.0.1:8265 "
         f"--submission-id {submission_id} "
         "--no-wait "
+        "--entrypoint-num-cpus 0 "
         f"--runtime-env-json={shlex.quote(_ray_runtime_env_json())} "
         f"-- bash -lc {shlex.quote(entrypoint)}"
     )
@@ -99,6 +101,11 @@ def _launch_teacher_server():
 
     print(f"Starting Megatron teacher server job {submission_id}, log: {log_path}")
     for _ in range(180):
+        status = _get_teacher_job_status(submission_id)
+        if any(terminal in status for terminal in ("FAILED", "STOPPED", "SUCCEEDED")):
+            _dump_teacher_job_debug(submission_id, log_path)
+            raise RuntimeError(f"Megatron teacher server job exited before serving: {status}")
+
         try:
             req = urllib.request.urlopen(f"http://{TEACHER_HOST}:{TEACHER_PORT}/healthz", timeout=2)
             if req.status == 200:
@@ -108,8 +115,24 @@ def _launch_teacher_server():
             pass
         time.sleep(5)
 
-    U.exec_command(f"tail -200 {log_path}; true")
+    _dump_teacher_job_debug(submission_id, log_path)
     raise RuntimeError(f"Megatron teacher server failed to start within timeout. Check {log_path}")
+
+
+def _get_teacher_job_status(submission_id: str) -> str:
+    result = subprocess.run(
+        ["ray", "job", "status", "--address=http://127.0.0.1:8265", submission_id],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    return result.stdout
+
+
+def _dump_teacher_job_debug(submission_id: str, log_path: str):
+    U.exec_command(f"ray job status --address=http://127.0.0.1:8265 {submission_id}; true")
+    U.exec_command(f"ray job logs --address=http://127.0.0.1:8265 {submission_id} | tail -200; true")
+    U.exec_command(f"tail -200 {log_path}; true")
 
 
 def _stop_teacher_server(submission_id: str | None):
