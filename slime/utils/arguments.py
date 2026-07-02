@@ -1079,6 +1079,43 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=1e-4,
                 help="The threshold for Off-Policy Sequence Masking (OPSM).",
             )
+            parser.add_argument(
+                "--use-cppo",
+                action="store_true",
+                default=False,
+                help=(
+                    "Enable Cumulative Prefix-divergence Policy Optimization (CPPO, "
+                    "https://arxiv.org/abs/2606.10968): replace the uniform token-level trust region "
+                    "with a position-weighted threshold and a cumulative prefix budget mask."
+                ),
+            )
+            parser.add_argument(
+                "--cppo-early-strictness",
+                type=float,
+                default=0.5,
+                help=(
+                    "CPPO position weight applied to eps_clip at the first response token "
+                    "(< 1.0 tightens the trust region for early tokens whose effects persist longer)."
+                ),
+            )
+            parser.add_argument(
+                "--cppo-late-relax",
+                type=float,
+                default=1.5,
+                help=(
+                    "CPPO position weight applied to eps_clip at the last response token "
+                    "(> 1.0 relaxes the trust region for late-stage tokens)."
+                ),
+            )
+            parser.add_argument(
+                "--cppo-prefix-budget",
+                type=float,
+                default=4.0,
+                help=(
+                    "CPPO cumulative prefix budget, as a multiple of eps_clip on the average prefix "
+                    "log-ratio drift. Smaller values mask later tokens more aggressively once a prefix drifts."
+                ),
+            )
             return parser
 
         def add_on_policy_distillation_arguments(parser):
@@ -1862,6 +1899,13 @@ def slime_validate_args(args):
             "Set --eps-clip 1.0 (and tune --eps-clip-high, e.g. 4.0) for the canonical wide setting.",
             args.eps_clip,
             1.0 - args.eps_clip,
+        )
+
+    if args.use_cppo:
+        assert args.advantage_estimator not in ["gspo", "cispo"], (
+            "CPPO replaces the uniform token-level trust region and is only compatible with "
+            "token-level clip estimators (grpo, ppo, reinforce_plus_plus, reinforce_plus_plus_baseline); "
+            f"got advantage_estimator={args.advantage_estimator}."
         )
 
     if args.eval_reward_key is None:

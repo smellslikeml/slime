@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from megatron.core import mpu
 from torch.utils.checkpoint import checkpoint
 
+from slime.utils.cumulative_prefix_mask import compute_cppo_mask
 from slime.utils.distributed_utils import distributed_masked_whiten
 from slime.utils.misc import load_function
 from slime.utils.ppo_utils import (
@@ -967,6 +968,9 @@ def policy_loss_function(
         old_log_probs = torch.cat(old_log_probs, dim=0)
         log_probs = torch.cat(log_probs, dim=0)
     else:
+        # Capture per-sample response token counts before flattening so CPPO can
+        # recover per-sequence position and reset its prefix budget per sequence.
+        cppo_segment_sizes = [lp.numel() for lp in log_probs] if args.use_cppo else None
         old_log_probs = torch.cat(old_log_probs, dim=0)
         log_probs = torch.cat(log_probs, dim=0)
         ppo_kl = old_log_probs - log_probs
@@ -978,6 +982,12 @@ def policy_loss_function(
 
     if args.use_opsm:
         pg_loss = pg_loss * opsm_mask
+
+    # CPPO: replace the uniform token-level trust region with a position-weighted
+    # threshold + cumulative prefix budget mask (https://arxiv.org/abs/2606.10968).
+    if args.use_cppo:
+        cppo_mask, cppo_clipfrac = compute_cppo_mask(args, ppo_kl, cppo_segment_sizes)
+        pg_loss = pg_loss * cppo_mask
 
     # Apply off-policy correction using importance sampling if enabled
     if args.get_mismatch_metrics or args.use_tis:
@@ -1096,6 +1106,9 @@ def policy_loss_function(
 
     if args.use_opsm:
         reported_loss["opsm_clipfrac"] = opsm_clipfrac
+
+    if args.use_cppo:
+        reported_loss["cppo_clipfrac"] = cppo_clipfrac.clone().detach()
 
     # Add OPD metrics if available
     if "opd_reverse_kl" in batch:
