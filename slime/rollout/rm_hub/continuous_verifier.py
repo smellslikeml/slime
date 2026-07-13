@@ -45,19 +45,6 @@ _CRITERIA_KEY = "criteria"
 _LOGPROBS_KEY = "score_logprobs"
 
 
-def _softmax(logits: list[float]) -> list[float]:
-    """Numerically stable softmax over a list of logits/logprobs."""
-    if not logits:
-        return []
-    hi = max(logits)
-    exps = [math.exp(x - hi) for x in logits]
-    total = sum(exps)
-    if total == 0.0:
-        # Degenerate input; fall back to a uniform distribution.
-        return [1.0 / len(logits)] * len(logits)
-    return [e / total for e in exps]
-
-
 def _token_value(token: str, value_map: Mapping[str, float] | None) -> float | None:
     """Resolve the numeric value a scoring token stands for.
 
@@ -81,30 +68,37 @@ def expected_score(
     """Continuous score = expectation over the scoring-token distribution.
 
     ``token_logprobs`` maps each candidate scoring token to the logit/logprob
-    the verifier assigned it. Tokens are softmax-normalised into a probability
+    the verifier assigned it. Tokens are renormalised into a probability
     distribution, the expected numeric value is taken, and the result is
-    rescaled to ``[0, 1]`` using the observed value range so callers get a
-    calibrated reward regardless of the raw score granularity.
+    rescaled to ``[0, 1]`` using the *full a-priori scale range* so callers
+    get a calibrated reward regardless of which tokens the endpoint actually
+    returned in its (possibly peaked or top-k-truncated) payload.
     """
-    values: list[float] = []
-    logits: list[float] = []
+    probs: dict[float, float] = {}
     for token, logprob in token_logprobs.items():
         value = _token_value(token, value_map)
         if value is None:
             continue
-        values.append(value)
-        logits.append(float(logprob))
+        p = math.exp(float(logprob))
+        # Distinct tokens can map to the same value (e.g. an "A"/"a" scale);
+        # keep the larger probability rather than double-counting it, matching
+        # the reference's max-dedup over the score scale.
+        probs[value] = max(probs.get(value, 0.0), p)
 
-    if not values:
+    if not probs:
         raise ValueError("continuous verifier received no numeric scoring tokens; pass a value_map or emit numeric token keys")
 
-    probs = _softmax(logits)
-    expected = sum(p * v for p, v in zip(probs, values, strict=False))
+    total_p = sum(probs.values())
+    expected = sum(v * p for v, p in probs.items()) / total_p
 
-    lo, hi = min(values), max(values)
+    # Normalise over the complete scale, not just the tokens present: with a
+    # value_map the scale is all of its values (the a-priori valid tokens);
+    # without one the numeric tokens observed define it.
+    scale = value_map.values() if value_map is not None else probs.keys()
+    lo, hi = min(scale), max(scale)
     if hi == lo:
-        # Single scoring bin carries no gradient; report its mass directly.
-        return sum(probs)
+        # Single scoring bin carries no gradient; report a neutral score.
+        return 0.5
     return (expected - lo) / (hi - lo)
 
 
