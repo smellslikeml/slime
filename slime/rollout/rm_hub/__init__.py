@@ -88,6 +88,10 @@ async def async_rm(args, sample: Sample, **kwargs):
         from .ifbench import compute_ifbench_reward
 
         return compute_ifbench_reward(response, label, metadata=metadata)
+    elif rm_type == "llm_verifier":
+        from .continuous_verifier import continuous_verifier_reward
+
+        return await continuous_verifier_reward(args, sample, **kwargs)
     elif rm_type == "random":
         return random.randint(0, 1)
     elif rm_type:
